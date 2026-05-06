@@ -1,0 +1,315 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no,viewport-fit=cover">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="apple-mobile-web-app-title" content="Lane Runner">
+<meta name="theme-color" content="#0f0f1e">
+<title>Lane Runner</title>
+<style>
+  * { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
+  html, body {
+    margin: 0; padding: 0; height: 100%;
+    background: #0f0f1e; color: #eee;
+    font-family: -apple-system, BlinkMacSystemFont, "SF Pro Text", system-ui, sans-serif;
+    overflow: hidden;
+    touch-action: none;
+    -webkit-user-select: none; user-select: none;
+    -webkit-touch-callout: none;
+  }
+  body {
+    display: flex; flex-direction: column; align-items: center; justify-content: center;
+    padding: env(safe-area-inset-top) env(safe-area-inset-right) env(safe-area-inset-bottom) env(safe-area-inset-left);
+  }
+  #wrap {
+    position: relative;
+    width: 100vw;
+    max-width: 480px;
+    aspect-ratio: 9 / 16;
+    max-height: 100vh;
+  }
+  canvas {
+    width: 100%; height: 100%;
+    display: block;
+    background: #0f0f1e;
+  }
+  #hud {
+    position: absolute; top: 16px; left: 16px; right: 16px;
+    display: flex; justify-content: space-between; pointer-events: none;
+    font-size: 16px; font-variant-numeric: tabular-nums;
+    text-shadow: 0 1px 2px rgba(0,0,0,0.5);
+  }
+  #score { font-size: 28px; font-weight: 700; }
+  #best { opacity: 0.75; align-self: center; }
+  #overlay {
+    position: absolute; inset: 0;
+    display: flex; flex-direction: column; align-items: center; justify-content: center;
+    background: rgba(15,15,30,0.88);
+    backdrop-filter: blur(6px); -webkit-backdrop-filter: blur(6px);
+    text-align: center; padding: 24px;
+  }
+  #overlay.hidden { display: none; }
+  #title { font-size: 32px; font-weight: 700; letter-spacing: 1px; }
+  #sub { opacity: 0.7; margin-top: 8px; font-size: 14px; line-height: 1.5; }
+  button {
+    background: #4ecdc4; color: #0f0f1e; border: none;
+    padding: 14px 36px; font-size: 18px; font-weight: 700;
+    border-radius: 10px; cursor: pointer; margin-top: 24px;
+    font-family: inherit;
+    box-shadow: 0 4px 14px rgba(78, 205, 196, 0.3);
+    transition: transform 0.08s ease;
+  }
+  button:active { transform: scale(0.96); }
+</style>
+</head>
+<body>
+<div id="wrap">
+  <canvas id="game" width="360" height="640"></canvas>
+  <div id="hud">
+    <span id="score">0</span>
+    <span id="best">Best 0</span>
+  </div>
+  <div id="overlay">
+    <div id="title">Lane Runner</div>
+    <div id="sub">Swipe ←/→ or tap left/right side<br>to switch lanes</div>
+    <button id="start">Start</button>
+  </div>
+</div>
+
+<script>
+const canvas = document.getElementById('game');
+const ctx = canvas.getContext('2d');
+const W = canvas.width, H = canvas.height;
+const LANES = 3;
+const LANE_W = W / LANES;
+const PLAYER_W = 50, PLAYER_H = 50;
+const PLAYER_Y = H - 100;
+const OBS_W = 56, OBS_H = 56;
+
+const overlay = document.getElementById('overlay');
+const titleEl = document.getElementById('title');
+const subEl = document.getElementById('sub');
+const startBtn = document.getElementById('start');
+const scoreEl = document.getElementById('score');
+const bestEl = document.getElementById('best');
+
+let state = null;
+let best = +(localStorage.getItem('laneRunnerBest') || 0);
+bestEl.textContent = 'Best ' + best;
+
+const laneCenter = (lane) => LANE_W * lane + LANE_W / 2;
+
+function reset() {
+  state = {
+    running: true,
+    lane: 1, x: laneCenter(1),
+    score: 0,
+    speed: 4.2,
+    obstacles: [],
+    coins: [],
+    spawnTimer: 0,
+    spawnInterval: 65,
+    coinTimer: 0,
+    roadOffset: 0,
+    flashUntil: 0,
+    last: performance.now(),
+  };
+  scoreEl.textContent = '0';
+  overlay.classList.add('hidden');
+}
+
+function gameOver() {
+  state.running = false;
+  if (state.score > best) {
+    best = state.score;
+    localStorage.setItem('laneRunnerBest', best);
+    bestEl.textContent = 'Best ' + best;
+  }
+  titleEl.textContent = state.score;
+  subEl.innerHTML = 'Game over' + (state.score === best ? ' — new best!' : '<br>Best ' + best);
+  startBtn.textContent = 'Play Again';
+  overlay.classList.remove('hidden');
+}
+
+function trySwitch(dir) {
+  if (!state || !state.running) return;
+  const next = state.lane + dir;
+  if (next >= 0 && next < LANES) state.lane = next;
+}
+
+function update(dt) {
+  if (!state.running) return;
+  const target = laneCenter(state.lane);
+  state.x += (target - state.x) * Math.min(1, dt * 0.018);
+  state.roadOffset = (state.roadOffset + state.speed) % 40;
+
+  for (const o of state.obstacles) o.y += state.speed;
+  state.obstacles = state.obstacles.filter(o => o.y < H + OBS_H);
+
+  for (const c of state.coins) c.y += state.speed;
+  state.coins = state.coins.filter(c => c.y < H + 30 && !c.taken);
+
+  state.spawnTimer++;
+  if (state.spawnTimer >= state.spawnInterval) {
+    state.spawnTimer = 0;
+    const lane = Math.floor(Math.random() * LANES);
+    state.obstacles.push({ lane, y: -OBS_H });
+    state.spawnInterval = Math.max(22, state.spawnInterval - 0.35);
+  }
+
+  state.coinTimer++;
+  if (state.coinTimer > 90 && Math.random() < 0.5) {
+    state.coinTimer = 0;
+    const lane = Math.floor(Math.random() * LANES);
+    if (!state.obstacles.some(o => o.lane === lane && o.y < 100)) {
+      state.coins.push({ lane, y: -30, taken: false });
+    }
+  }
+
+  const px1 = state.x - PLAYER_W/2, px2 = state.x + PLAYER_W/2;
+  const py1 = PLAYER_Y - PLAYER_H/2, py2 = PLAYER_Y + PLAYER_H/2;
+
+  for (const o of state.obstacles) {
+    const ox1 = laneCenter(o.lane) - OBS_W/2;
+    const ox2 = laneCenter(o.lane) + OBS_W/2;
+    const oy1 = o.y, oy2 = o.y + OBS_H;
+    if (px1 < ox2 && px2 > ox1 && py1 < oy2 && py2 > oy1) {
+      gameOver();
+      return;
+    }
+  }
+  for (const c of state.coins) {
+    if (c.taken) continue;
+    const cx = laneCenter(c.lane), cy = c.y + 15;
+    const dx = cx - state.x, dy = cy - PLAYER_Y;
+    if (dx*dx + dy*dy < 35*35) {
+      c.taken = true;
+      state.score += 25;
+      state.flashUntil = performance.now() + 120;
+    }
+  }
+
+  state.score += 1;
+  state.speed = 4.2 + Math.min(state.score * 0.0009, 5);
+  scoreEl.textContent = state.score;
+}
+
+function roundRect(ctx, x, y, w, h, r) {
+  ctx.beginPath();
+  ctx.moveTo(x+r, y);
+  ctx.arcTo(x+w, y, x+w, y+h, r);
+  ctx.arcTo(x+w, y+h, x, y+h, r);
+  ctx.arcTo(x, y+h, x, y, r);
+  ctx.arcTo(x, y, x+w, y, r);
+  ctx.closePath();
+}
+
+function draw() {
+  ctx.fillStyle = '#0f0f1e';
+  ctx.fillRect(0, 0, W, H);
+
+  const g = ctx.createLinearGradient(0, 0, 0, H);
+  g.addColorStop(0, 'rgba(78, 205, 196, 0.04)');
+  g.addColorStop(1, 'rgba(78, 205, 196, 0)');
+  ctx.fillStyle = g;
+  ctx.fillRect(0, 0, W, H);
+
+  ctx.strokeStyle = 'rgba(255,255,255,0.14)';
+  ctx.lineWidth = 3;
+  ctx.setLineDash([22, 18]);
+  ctx.lineDashOffset = -state.roadOffset;
+  for (let i = 1; i < LANES; i++) {
+    const x = LANE_W * i;
+    ctx.beginPath();
+    ctx.moveTo(x, 0);
+    ctx.lineTo(x, H);
+    ctx.stroke();
+  }
+  ctx.setLineDash([]);
+
+  for (const c of state.coins) {
+    if (c.taken) continue;
+    const cx = laneCenter(c.lane), cy = c.y + 15;
+    ctx.fillStyle = '#ffd166';
+    ctx.beginPath();
+    ctx.arc(cx, cy, 12, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.fillStyle = '#fff5d6';
+    ctx.beginPath();
+    ctx.arc(cx - 3, cy - 3, 4, 0, Math.PI * 2);
+    ctx.fill();
+  }
+
+  for (const o of state.obstacles) {
+    ctx.fillStyle = '#ff6b6b';
+    const x = laneCenter(o.lane) - OBS_W/2;
+    roundRect(ctx, x, o.y, OBS_W, OBS_H, 8);
+    ctx.fill();
+    ctx.fillStyle = 'rgba(255,255,255,0.18)';
+    ctx.fillRect(x + 6, o.y + 6, OBS_W - 12, 6);
+  }
+
+  const flash = performance.now() < state.flashUntil;
+  ctx.fillStyle = flash ? '#ffd166' : '#4ecdc4';
+  roundRect(ctx, state.x - PLAYER_W/2, PLAYER_Y - PLAYER_H/2, PLAYER_W, PLAYER_H, 10);
+  ctx.fill();
+  ctx.fillStyle = '#fff';
+  ctx.fillRect(state.x - 8, PLAYER_Y - PLAYER_H/2 + 8, 16, 5);
+  ctx.fillStyle = 'rgba(0,0,0,0.18)';
+  ctx.fillRect(state.x - PLAYER_W/2, PLAYER_Y + PLAYER_H/2 - 7, PLAYER_W, 7);
+}
+
+function loop(ts) {
+  if (!state) { requestAnimationFrame(loop); return; }
+  const dt = ts - state.last;
+  state.last = ts;
+  if (state.running) update(dt);
+  draw();
+  requestAnimationFrame(loop);
+}
+
+window.addEventListener('keydown', (e) => {
+  if (e.key === 'ArrowLeft' || e.key.toLowerCase() === 'a') trySwitch(-1);
+  else if (e.key === 'ArrowRight' || e.key.toLowerCase() === 'd') trySwitch(1);
+});
+
+let touchStartX = null, touchStartY = null, touchStartT = 0;
+canvas.addEventListener('touchstart', (e) => {
+  e.preventDefault();
+  touchStartX = e.touches[0].clientX;
+  touchStartY = e.touches[0].clientY;
+  touchStartT = performance.now();
+}, { passive: false });
+
+canvas.addEventListener('touchend', (e) => {
+  if (touchStartX === null) return;
+  const dx = e.changedTouches[0].clientX - touchStartX;
+  const dy = e.changedTouches[0].clientY - touchStartY;
+  const dt = performance.now() - touchStartT;
+  if (Math.abs(dx) > 24 && Math.abs(dx) > Math.abs(dy)) {
+    trySwitch(dx > 0 ? 1 : -1);
+  } else if (dt < 250 && Math.abs(dx) < 24 && Math.abs(dy) < 24) {
+    const rect = canvas.getBoundingClientRect();
+    const x = e.changedTouches[0].clientX - rect.left;
+    trySwitch(x < rect.width / 2 ? -1 : 1);
+  }
+  touchStartX = touchStartY = null;
+}, { passive: false });
+
+startBtn.addEventListener('click', reset);
+canvas.addEventListener('contextmenu', (e) => e.preventDefault());
+
+state = {
+  running: false,
+  lane: 1, x: laneCenter(1), score: 0, speed: 0,
+  obstacles: [], coins: [],
+  spawnTimer: 0, spawnInterval: 65, coinTimer: 0, roadOffset: 0, flashUntil: 0,
+  last: performance.now(),
+};
+draw();
+requestAnimationFrame(loop);
+</script>
+</body>
+</html>
