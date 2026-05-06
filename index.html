@@ -151,20 +151,35 @@ function update(dt) {
   for (const c of state.coins) c.y += state.speed;
   state.coins = state.coins.filter(c => c.y < H + 30 && !c.taken);
 
+  const MIN_GAP = 220;
+  const laneClearAtTop = (lane) => {
+    for (const o of state.obstacles) if (o.lane === lane && o.y < MIN_GAP) return false;
+    for (const c of state.coins) if (c.lane === lane && !c.taken && c.y < MIN_GAP) return false;
+    return true;
+  };
+
   state.spawnTimer++;
   if (state.spawnTimer >= state.spawnInterval) {
     state.spawnTimer = 0;
-    const lane = Math.floor(Math.random() * LANES);
-    state.obstacles.push({ lane, y: -OBS_H });
+    const order = [...new Set([Math.floor(Math.random() * LANES), 0, 1, 2])];
+    for (const lane of order) {
+      if (laneClearAtTop(lane)) {
+        state.obstacles.push({ lane, y: -OBS_H });
+        break;
+      }
+    }
     state.spawnInterval = Math.max(22, state.spawnInterval - 0.35);
   }
 
   state.coinTimer++;
   if (state.coinTimer > 90 && Math.random() < 0.5) {
     state.coinTimer = 0;
-    const lane = Math.floor(Math.random() * LANES);
-    if (!state.obstacles.some(o => o.lane === lane && o.y < 100)) {
-      state.coins.push({ lane, y: -30, taken: false });
+    const order = [...new Set([Math.floor(Math.random() * LANES), 0, 1, 2])];
+    for (const lane of order) {
+      if (laneClearAtTop(lane)) {
+        state.coins.push({ lane, y: -30, taken: false });
+        break;
+      }
     }
   }
 
