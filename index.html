@@ -99,6 +99,34 @@ let state = null;
 let best = +(localStorage.getItem('laneRunnerBest') || 0);
 bestEl.textContent = 'Best ' + best;
 
+let audioCtx = null;
+function ensureAudio() {
+  if (!audioCtx) {
+    const AC = window.AudioContext || window.webkitAudioContext;
+    if (AC) audioCtx = new AC();
+  }
+  if (audioCtx && audioCtx.state === 'suspended') audioCtx.resume();
+}
+
+function playCoin() {
+  if (!audioCtx) return;
+  const now = audioCtx.currentTime;
+  const tone = (freq, t0, dur, vol = 0.18) => {
+    const osc = audioCtx.createOscillator();
+    const gain = audioCtx.createGain();
+    osc.type = 'square';
+    osc.frequency.value = freq;
+    gain.gain.setValueAtTime(0.0001, now + t0);
+    gain.gain.exponentialRampToValueAtTime(vol, now + t0 + 0.005);
+    gain.gain.exponentialRampToValueAtTime(0.0001, now + t0 + dur);
+    osc.connect(gain).connect(audioCtx.destination);
+    osc.start(now + t0);
+    osc.stop(now + t0 + dur);
+  };
+  tone(988, 0,    0.08);   // B5
+  tone(1319, 0.08, 0.18);  // E6
+}
+
 const laneCenter = (lane) => LANE_W * lane + LANE_W / 2;
 
 function reset() {
@@ -203,6 +231,7 @@ function update(dt) {
       c.taken = true;
       state.score += 25;
       state.flashUntil = performance.now() + 120;
+      playCoin();
     }
   }
 
@@ -313,7 +342,7 @@ canvas.addEventListener('touchend', (e) => {
   touchStartX = touchStartY = null;
 }, { passive: false });
 
-startBtn.addEventListener('click', reset);
+startBtn.addEventListener('click', () => { ensureAudio(); reset(); });
 canvas.addEventListener('contextmenu', (e) => e.preventDefault());
 
 state = {
